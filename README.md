@@ -16,25 +16,61 @@ Gemini хорошо пишет текст по вашему промпту (`**�
 6. Добавляет референсное вступление, зелёные плашки, запись, доп. информацию, инфопартнёров и видео
 7. Создаёт проект через API Mediiia, заливает блоки и открывает редактор в выбранном браузере
 
-## Скачать для Windows
+## Установка на Windows
 
-Готовые файлы находятся на странице
-[последнего релиза](https://github.com/ImStechen/mediiia-publisher/releases/latest):
+Нужны **Windows 10 или 11 (x64)**, интернет и уже установленный **Google Chrome** или **Microsoft Edge**. Браузер в программу не входит — поэтому сборка остаётся лёгкой. Какой браузер использовать, выбираете в карточке «Параметры».
 
-- `MediiiaPublisher-portable.zip` — portable: распаковать и запустить
-  `MediiiaPublisher.exe`, установка не нужна;
-- `MediiiaPublisher-Setup.exe` — полный офлайн-установщик;
-- `MediiiaPublisher-WebSetup.exe` — маленький установщик, который скачивает
-  актуальную portable-сборку с GitHub.
+Скачайте файл на странице [последнего релиза](https://github.com/ImStechen/mediiia-publisher/releases/latest). Если Windows Defender или SmartScreen спросит «неизвестный издатель» — это обычная реакция на программу без цифровой подписи. Нажмите «Подробнее» → «Выполнить в любом случае».
 
-Требования: Windows 10/11 x64, Google Chrome или Microsoft Edge, интернет.
-Chrome/Edge не входят в сборку — поэтому portable остаётся сравнительно
-лёгкой. Браузер выбирается в карточке «Параметры», выбор запоминается.
+### Portable — без установки
 
-## Установка (разработка)
+Подходит, если не хотите ничего ставить в систему: можно держать на флешке или в папке на рабочем столе.
+
+1. Скачайте [`MediiiaPublisher-portable.zip`](https://github.com/ImStechen/mediiia-publisher/releases/latest/download/MediiiaPublisher-portable.zip).
+2. Распакуйте архив в любую папку, например `C:\Programs\MediiiaPublisher`. Не запускайте `.exe` прямо из окна архива — сначала распакуйте.
+3. Откройте папку и запустите **`MediiiaPublisher.exe`**.
+
+Папку можно переименовать и переносить. Логин, сессия и выбор браузера хранятся отдельно, в `%USERPROFILE%\.mediiia-publisher`, и не удаляются вместе с папкой.
+
+### Полный установщик — без интернета при установке
+
+Подходит, если ставите на компьютер без доступа к GitHub или хотите ярлык в меню «Пуск».
+
+1. Скачайте [`MediiiaPublisher-Setup.exe`](https://github.com/ImStechen/mediiia-publisher/releases/latest/download/MediiiaPublisher-Setup.exe) (~45 МБ).
+2. Запустите файл. Права администратора не нужны.
+3. Примите папку по умолчанию (`%LOCALAPPDATA%\Programs\Mediiia Publisher`) или укажите свою.
+4. По желанию отметьте ярлык на рабочем столе.
+5. После установки программа откроется сама. Дальше её можно запускать из меню «Пуск» → **Mediiia публикатор**.
+
+### Маленький установщик — скачивает программу с GitHub
+
+Подходит, если хотите короткий файл (~2 МБ) и всегда свежую версию с GitHub. На компьютере должен быть интернет.
+
+1. Скачайте [`MediiiaPublisher-WebSetup.exe`](https://github.com/ImStechen/mediiia-publisher/releases/latest/download/MediiiaPublisher-WebSetup.exe).
+2. Запустите файл. Права администратора не нужны.
+3. Установщик сам скачает `MediiiaPublisher-portable.zip` с GitHub и распакует его в `%LOCALAPPDATA%\Programs\Mediiia Publisher`.
+4. После установки программу можно запускать из меню «Пуск».
+
+### Что выбрать
+
+| Файл | Когда брать |
+|---|---|
+| `MediiiaPublisher-portable.zip` | Не ставить в систему, переносить папкой |
+| `MediiiaPublisher-Setup.exe` | Обычная установка, компьютер может быть без GitHub |
+| `MediiiaPublisher-WebSetup.exe` | Короткий файл, установка с интернетом |
+
+### Удаление
+
+- Установщик: «Параметры Windows» → «Приложения» → **Mediiia публикатор** → «Удалить», либо `unins000.exe` в папке программы.
+- Portable: просто удалите папку с программой.
+
+Данные аккаунта при этом остаются в `%USERPROFILE%\.mediiia-publisher`. Чтобы выйти полностью, удалите и эту папку.
+
+## Установка из исходников (для разработки)
 
 ```powershell
-cd C:\Users\ASA\Desktop\Cursor\mediiia-publisher
+git clone https://github.com/ImStechen/mediiia-publisher.git
+cd mediiia-publisher
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
