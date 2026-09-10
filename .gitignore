@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+config.json
+.pytest_cache/
+*.egg-info/
+.mediiia-publisher/
+*.docx
+*.zip
+release/
+installer/output/
+assets/app.ico
+packaging/build.ini

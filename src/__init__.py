@@ -1,0 +1,1 @@
+"""Mediiia Publisher — черновики статей из текста Gemini."""

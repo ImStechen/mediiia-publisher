@@ -1,0 +1,33 @@
+{
+  "account_id": "",
+  "account_email": "",
+  "default_tags": {
+    "required_education": "о креативных индустриях",
+    "common": [
+      "event factory",
+      "архив ивентов",
+      "пост-релиз"
+    ]
+  },
+  "default_tag_ids": {
+    "о креативных индустриях": "5cdfadc416e14e4bbfb1c72152e61519",
+    "об ивенте": "879cb279d0de49038ce19ce08adf46a6",
+    "event factory": "9688794012d7421ca17af62aa4f414e1",
+    "архив ивентов": "395fc8930ab14196a04de310c96be8ff",
+    "пост-релиз": "a76085dd01be46198baf3e3da31c3fcb"
+  },
+  "default_coauthor_ids": [],
+  "browser": "chrome",
+  "open_draft_after_create": true,
+  "visibility": "public",
+  "article_tail": {
+    "promo_banner": "«CREATIVE HUB» — промокод на скидку 5% на все курсы ДПО",
+    "intro_template": "<strong>{date}</strong> в пространстве <a href=\"https://creative.hse.ru/hub\" target=\"_blank\" rel=\"noopener noreferrer\">Креативный хаб / HSE CREATIVE HUB</a> прошло мероприятие {title}.<br><br>Вкратце рассказываем, как прошло мероприятие.",
+    "record_channel": "HSE CREATIVE HUB",
+    "record_channel_url": "https://vkvideo.ru/@creativehub_hse",
+    "record_template": "Послушать полные выступления спикеров можно в записи дискуссии в канале {record_link}.",
+    "partners_intro": "Благодарим наших информационных партнёров за поддержку этого мероприятия:",
+    "default_time_from": "18:30",
+    "default_time_to": "21:00"
+  }
+}
