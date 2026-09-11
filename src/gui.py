@@ -1257,7 +1257,11 @@ class App(ctk.CTk):
                         on_progress=progress,
                     )
             except MediiiaError as exc:
-                message = f"Mediiia не приняла запрос: {exc}"
+                if "HTTP 401" in str(exc) or "HTTP 403" in str(exc):
+                    clear_session()
+                    message = "Вход в Mediiia больше не действует. Войдите заново и повторите."
+                else:
+                    message = f"Mediiia не приняла запрос: {exc}"
                 self.post(lambda: self._finish_publish(error=message))
                 return
             except Exception as exc:

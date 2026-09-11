@@ -26,6 +26,8 @@ OIDC_STORAGE_KEY = "oidc.user:https://auth.mediiia.ru:MediiiaCom"
 APP_DATA_DIR = Path.home() / ".mediiia-publisher"
 DEFAULT_TOKEN_PATH = APP_DATA_DIR / "session.json"
 BROWSER_PROFILE_DIR = APP_DATA_DIR / "browser"
+LANDING_URL = "https://mediiia.com/"
+FRESHNESS_SKEW_SEC = 120.0
 
 
 def token_path() -> Path:
@@ -81,7 +83,7 @@ def _extract_oidc(raw: str | None) -> dict[str, Any] | None:
         pass
     return {
         "access_token": access,
-        "expires_at": user.get("expires_at"),
+        "expires_at": user.get("expires_at") or access_profile.get("exp"),
         "token_type": user.get("token_type") or "Bearer",
         "account_id": access_profile.get("account_id") or profile.get("accountId"),
         "identity_sub": profile.get("sub"),
@@ -91,19 +93,38 @@ def _extract_oidc(raw: str | None) -> dict[str, Any] | None:
     }
 
 
+def is_fresh(session: dict[str, Any], skew: float = FRESHNESS_SKEW_SEC) -> bool:
+    """
+    В localStorage браузера токен остаётся с прошлого запуска, даже просроченный.
+    Берём его только пока он живой, иначе сохранили бы мёртвую сессию.
+    """
+    expires_at = session.get("expires_at")
+    if expires_at is None:
+        return True
+    try:
+        return time.time() < float(expires_at) - skew
+    except (TypeError, ValueError):
+        return True
+
+
 def _account_id_from_page(page: Any) -> str:
-    """Находит публичный account_id в ссылке профиля после входа."""
+    """
+    Запасной способ узнать account_id — по ссылке на профиль.
+    В ленте ссылок на чужие аккаунты много, и угадывать нельзя:
+    отвечаем только когда на странице ровно один аккаунт.
+    """
     try:
         hrefs = page.locator("a[href*='/account/']").evaluate_all(
             "nodes => nodes.map(node => node.href)"
         )
     except Exception:
         return ""
-    for href in hrefs:
-        match = re.search(r"([0-9a-f]{32})(?:[/?#]|$)", str(href), re.I)
-        if match:
-            return match.group(1).lower()
-    return ""
+    found = {
+        match.group(1).lower()
+        for href in hrefs
+        if (match := re.search(r"([0-9a-f]{32})(?:[/?#]|$)", str(href), re.I))
+    }
+    return found.pop() if len(found) == 1 else ""
 
 
 def profile_dir_for(email: str | None, browser: str = "chrome") -> Path:
@@ -172,31 +193,47 @@ def login_via_browser(
                 "Установите браузер или выберите другой в параметрах."
             ) from exc
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto("https://mediiia.com/edit", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-
-        if email and password and "auth.mediiia.ru" in page.url:
-            try:
-                _fill_login_form(page, email, password)
-            except Exception:
-                pass  # не получилось автоматически — пользователь войдёт сам
+        page.goto(LANDING_URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(1000)
 
         deadline = time.time() + timeout_sec
         session: dict[str, Any] | None = None
+        form_attempts = 0
+        renew_not_before = 0.0
         while time.time() < deadline:
+            if "auth.mediiia.ru" in page.url:
+                if email and password and form_attempts < 2:
+                    form_attempts += 1
+                    try:
+                        _fill_login_form(page, email, password)
+                    except Exception:
+                        pass  # не вышло автоматически — пользователь войдёт сам
+                page.wait_for_timeout(1000)
+                continue
+
+            candidate: dict[str, Any] | None = None
             try:
                 raw = page.evaluate(
                     f"() => window.localStorage.getItem({json.dumps(OIDC_STORAGE_KEY)})"
                 )
                 candidate = _extract_oidc(raw)
-                if candidate and "auth.mediiia.ru" not in page.url:
-                    account_id = _account_id_from_page(page)
-                    if account_id:
-                        candidate["account_id"] = account_id
-                    session = candidate
-                    break
             except Exception:
                 pass
+
+            if candidate and is_fresh(candidate):
+                if not candidate.get("account_id"):
+                    candidate["account_id"] = _account_id_from_page(page)
+                session = candidate
+                break
+
+            if candidate and time.time() >= renew_not_before:
+                # Токен остался с прошлого запуска. Перезагрузка страницы
+                # заставляет сайт обменять refresh_token на свежий.
+                renew_not_before = time.time() + 10
+                try:
+                    page.reload(wait_until="domcontentloaded")
+                except Exception:
+                    pass
             page.wait_for_timeout(1000)
 
         context.close()
