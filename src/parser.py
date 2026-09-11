@@ -12,6 +12,8 @@ GREEN = "#3ccd29"
 BLOCK_LABELS = {
     "quote": "ЦИТАТА",
     "green": "ЗЕЛЁНАЯ ПЛАШКА",
+    "green_top": "ВЕРХНЯЯ ЗЕЛЁНАЯ ПЛАШКА",
+    "green_bottom": "НИЖНЯЯ ЗЕЛЁНАЯ ПЛАШКА",
     "intro": "ВСТУПЛЕНИЕ",
     "partners": "ИНФОПАРТНЁРЫ",
     "outro": "ЗАПИСЬ + ДОП. ИНФО",
@@ -48,7 +50,28 @@ class Article:
         return lines
 
 
+def article_to_markup(article: Article) -> str:
+    """Обратимое представление статьи для визуального редактора исходника."""
+    chunks = [article.title.strip()] if article.title.strip() else []
+    for block in article.blocks:
+        if block.source == "quote":
+            quote = f"«{block.title or strip_markup(block.text)}»"
+            if block.quote_author:
+                quote += f" — {block.quote_author}"
+            chunks.append("> " + quote)
+            continue
+        text = re.sub(
+            r"^\s*<h3>(.*?)</h3>", r"# \1", block.text, count=1, flags=re.I | re.S
+        )
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I).strip()
+        if text:
+            chunks.append(text)
+    return "\n\n".join(chunks)
+
+
 _BOLD_MD = re.compile(r"\*\*(.+?)\*\*")
+_ITALIC_MD = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_LINK_MD = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 _QUOTE_PREFIX = re.compile(r"^>\s?")
 _HEADING = re.compile(r"^#{1,6}\s+")
 _MULTI_NL = re.compile(r"\n{3,}")
@@ -73,18 +96,27 @@ def strip_markup(text: str) -> str:
 
 
 def markdown_inline_to_html(text: str) -> str:
-    """**жирный** → <strong>жирный</strong>. Готовый HTML не ломаем."""
+    """Жирный, курсив и ссылки → HTML, уже готовые разрешённые теги сохраняем."""
     text = text.strip()
     if not text:
         return ""
-    if "<strong>" in text.lower() or "<b>" in text.lower():
-        return re.sub(
-            r"</?b>",
-            lambda m: "<strong>" if m.group(0).lower() == "<b>" else "</strong>",
-            text,
-            flags=re.I,
-        )
-    return _BOLD_MD.sub(r"<strong>\1</strong>", text)
+    text = re.sub(
+        r"</?b>",
+        lambda m: "<strong>" if m.group(0).lower() == "<b>" else "</strong>",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"</?i>",
+        lambda m: "<em>" if m.group(0).lower() == "<i>" else "</em>",
+        text,
+        flags=re.I,
+    )
+    text = _LINK_MD.sub(
+        r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>', text
+    )
+    text = _BOLD_MD.sub(r"<strong>\1</strong>", text)
+    return _ITALIC_MD.sub(r"<em>\1</em>", text)
 
 
 def is_typographic_quote(text: str) -> bool:
@@ -418,7 +450,11 @@ class TailSettings:
     partners_raw: str = ""  # «Название (ссылка), Название (ссылка)»
     extra_info: str = ""  # произвольная информация после ссылки на запись
     video_embed: str = ""  # именно iframe-код VK
-    promo_banner: bool = True
+    top_banner: str = "promo"
+    top_banner_custom: str = ""
+    bottom_banner: str = "site"
+    bottom_banner_custom: str = ""
+    promo_banner: bool | None = None  # совместимость со старыми вызовами
 
 
 _LINK_IN_PARENS = re.compile(r"\((https?://[^)\s]+)\)")
@@ -465,13 +501,45 @@ def _fill(template: str, values: dict[str, str]) -> str:
     return template
 
 
+def _banner_text(
+    selected: str,
+    custom: str,
+    options: dict[str, tuple[str, str]],
+    values: dict[str, str],
+) -> str:
+    if selected == "custom":
+        template = custom.strip()
+    else:
+        template = options.get(selected, ("", ""))[1]
+    return _fill(template, values).strip()
+
+
 def build_intro_blocks(
     article: Article, tail: TailSettings, templates: dict[str, str]
 ) -> list[Block]:
+    from .config import TOP_BANNER_OPTIONS
+
     blocks: list[Block] = []
-    promo = (templates.get("promo_banner") or "").strip()
-    if tail.promo_banner and promo:
-        blocks.append(Block(style="colored", text=promo, source="green", color=GREEN))
+    selected = tail.top_banner
+    if tail.promo_banner is False:
+        selected = "none"
+    elif tail.promo_banner is True and selected == "promo":
+        # Старый config.json может переопределять текст промокода.
+        TOP_BANNER_OPTIONS = dict(TOP_BANNER_OPTIONS)
+        TOP_BANNER_OPTIONS["promo"] = (
+            TOP_BANNER_OPTIONS["promo"][0],
+            templates.get("promo_banner") or TOP_BANNER_OPTIONS["promo"][1],
+        )
+    banner = _banner_text(
+        selected,
+        tail.top_banner_custom,
+        TOP_BANNER_OPTIONS,
+        {"date": tail.event_date.strip(), "title": article.title.strip()},
+    )
+    if banner:
+        blocks.append(
+            Block(style="colored", text=banner, source="green_top", color=GREEN)
+        )
 
     intro = (templates.get("intro_template") or "").strip()
     if intro and tail.event_date.strip():
@@ -492,6 +560,8 @@ def build_intro_blocks(
 
 
 def build_tail_blocks(tail: TailSettings, templates: dict[str, str]) -> list[Block]:
+    from .config import BOTTOM_BANNER_OPTIONS
+
     blocks: list[Block] = []
 
     channel = templates.get("record_channel") or "HSE CREATIVE HUB"
@@ -531,20 +601,27 @@ def build_tail_blocks(tail: TailSettings, templates: dict[str, str]) -> list[Blo
     if iframe:
         blocks.append(Block(style="video", text=iframe, source="video"))
 
-    event_tpl = (templates.get("event_template") or "").strip()
-    if event_tpl and tail.event_date.strip():
+    bottom_options = dict(BOTTOM_BANNER_OPTIONS)
+    bottom_options["site"] = (
+        bottom_options["site"][0],
+        templates.get("event_template") or bottom_options["site"][1],
+    )
+    banner = _banner_text(
+        tail.bottom_banner,
+        tail.bottom_banner_custom,
+        bottom_options,
+        {
+            "date": tail.event_date.strip(),
+            "time_from": tail.time_from.strip(),
+            "time_to": tail.time_to.strip(),
+        },
+    )
+    if banner:
         blocks.append(
             Block(
                 style="colored",
-                text=_fill(
-                    event_tpl,
-                    {
-                        "date": tail.event_date.strip(),
-                        "time_from": tail.time_from.strip(),
-                        "time_to": tail.time_to.strip(),
-                    },
-                ),
-                source="green",
+                text=banner,
+                source="green_bottom",
                 color=GREEN,
             )
         )

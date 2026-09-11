@@ -27,7 +27,7 @@ time.sleep(0.6)
 app.update()
 app.record_entry.insert(0, "https://vkvideo.ru/video-1_1")
 app.video_box.insert("1.0", "<iframe src=\"https://vkvideo.ru/x\"></iframe>")
-app.extra_box.insert("1.0", "Ещё будет лекция 20 октября")
+app.extra_editor.set_markup("Ещё будет лекция 20 октября")
 app.refresh_preview()
 app.refresh_readiness()
 app.update()
@@ -52,9 +52,10 @@ print("после сброса — статья:", app.article,
       "| дата:", repr(app.date_entry.get()),
       "| ссылка:", repr(app.record_entry.get()),
       "| код видео:", repr(app.video_box.get("1.0", "end").strip()),
-      "| доп:", repr(app.extra_box.get("1.0", "end").strip()))
+      "| доп:", repr(app.extra_editor.get_markup().strip()))
 print("время вернулось:", app.time_from.get(), "-", app.time_to.get())
-print("плашка промо:", app.promo_var.get())
+print("верхняя плашка:", app.top_banner_choice.get())
+print("нижняя плашка:", app.bottom_banner_choice.get())
 print("кнопка сброса теперь:", app.reset_btn.cget("state"))
 print("кнопка публикации:", app.publish_btn.cget("state"))
 print("статус:", app.status_message)

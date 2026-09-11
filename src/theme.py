@@ -159,6 +159,24 @@ def checkbox(**overrides: Any) -> dict[str, Any]:
     return style
 
 
+def option_menu(**overrides: Any) -> dict[str, Any]:
+    style = {
+        "height": FIELD_HEIGHT,
+        "corner_radius": RADIUS,
+        "fg_color": NAVY,
+        "button_color": NAVY,
+        "button_hover_color": NAVY_HOVER,
+        "dropdown_fg_color": CARD,
+        "dropdown_hover_color": NAVY_SOFT,
+        "dropdown_text_color": TEXT,
+        "text_color": "#FFFFFF",
+        "font": font(12),
+        "dropdown_font": font(12),
+    }
+    style.update(overrides)
+    return style
+
+
 def card(**overrides: Any) -> dict[str, Any]:
     style = {
         "corner_radius": RADIUS,

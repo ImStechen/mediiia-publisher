@@ -86,9 +86,59 @@ def test_tail_wraps_article_with_green_blocks():
     full = assemble(article, tail, DEFAULT_TAIL_TEMPLATES)
 
     kinds = [block.source for block in full.blocks]
-    assert kinds == ["green", "intro", "paragraph", "outro", "partners", "video", "green"]
+    assert kinds == [
+        "green_top",
+        "intro",
+        "paragraph",
+        "outro",
+        "partners",
+        "video",
+        "green_bottom",
+    ]
     assert full.blocks[0].color == GREEN
     assert full.blocks[-1].color == GREEN
     assert "9 сентября 2026 года с 18:30 до 21:00" in full.blocks[-1].text
     assert "Дополнительный текст от редактора" in full.blocks[3].text
     assert '<a href="https://t.me/partner"' in full.blocks[4].text
+
+
+def test_banner_variants_and_custom_text():
+    article = parse_plain_text("Заголовок\n\nАбзац.")
+    telegram = assemble(
+        article,
+        TailSettings(
+            event_date="16 июля",
+            time_from="18:30",
+            time_to="21:00",
+            top_banner="telegram_bot",
+            bottom_banner="telegram_channel",
+        ),
+        DEFAULT_TAIL_TEMPLATES,
+    )
+    assert "crehub_hse_bot" in telegram.blocks[0].text
+    assert "creativehub_hse" in telegram.blocks[-1].text
+    assert "<a href=" in telegram.blocks[0].text
+
+    custom = assemble(
+        article,
+        TailSettings(
+            event_date="16 июля",
+            top_banner="custom",
+            top_banner_custom='<strong>Свой верх</strong> и <a href="https://example.com">ссылка</a>',
+            bottom_banner="custom",
+            bottom_banner_custom="Свой низ: {date}",
+        ),
+        DEFAULT_TAIL_TEMPLATES,
+    )
+    assert custom.blocks[0].text.startswith("<strong>Свой верх</strong>")
+    assert custom.blocks[-1].text == "Свой низ: 16 июля"
+
+
+def test_banners_can_be_disabled():
+    article = parse_plain_text("Заголовок\n\nАбзац.")
+    full = assemble(
+        article,
+        TailSettings(top_banner="none", bottom_banner="none"),
+        DEFAULT_TAIL_TEMPLATES,
+    )
+    assert not any(block.source.startswith("green") for block in full.blocks)

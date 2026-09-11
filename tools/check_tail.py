@@ -45,7 +45,7 @@ def main() -> None:
 
     print("\n— HTML служебных блоков —")
     for block in full.blocks:
-        if block.source in {"green", "partners", "outro", "video"}:
+        if block.source.startswith("green") or block.source in {"partners", "outro", "video"}:
             print(f"[{block.source}] style={block.style} color={block.color or '(по умолчанию)'}")
             print(block.text)
             print()

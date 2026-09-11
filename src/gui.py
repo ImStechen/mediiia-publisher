@@ -22,10 +22,19 @@ from .browsers import (
     open_in_browser,
     save_browser_preference,
 )
-from .config import load_config, tag_names_from_config, tail_templates
+from .config import (
+    BOTTOM_BANNER_OPTIONS,
+    TOP_BANNER_OPTIONS,
+    banner_key_for_label,
+    banner_labels,
+    load_config,
+    tag_names_from_config,
+    tail_templates,
+)
 from .credentials import Credentials, clear_credentials, load_credentials, save_credentials
 from .mediiia_api import MediiiaClient, MediiiaError
-from .parser import Article, Block, TailSettings, assemble, load_article
+from .parser import Article, Block, TailSettings, article_to_markup, assemble, load_article
+from .rich_text import RichTextEditor, parse_markup, safe_url
 
 ctk.set_appearance_mode("Light")
 
@@ -35,14 +44,21 @@ MONTHS = (
 ).split()
 _DATE_IN_NAME = re.compile(r"(\d{1,2})\s*([а-яё]+)", re.I)
 _TAGS = re.compile(r"<[^>]+>")
-_H3 = re.compile(r"^<h3>(.*?)</h3>\s*(?:<br>\s*)*", re.I | re.S)
 
 # Tk определяет Ctrl+C/V по символу, поэтому при русской раскладке сочетания
 # не работают. Ловим их по коду клавиши.
 _CTRL_KEYCODES = {65: "select_all", 67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>"}
 
 PREVIEW_SNIPPET = 220
-SERVICE_SOURCES = {"green", "intro", "partners", "outro", "video"}
+SERVICE_SOURCES = {
+    "green",
+    "green_top",
+    "green_bottom",
+    "intro",
+    "partners",
+    "outro",
+    "video",
+}
 EXTRA_MISSING = {"Ссылка": "ссылки на запись", "Видео": "видео"}
 
 
@@ -243,6 +259,71 @@ class LoginDialog(ctk.CTkToplevel):
             self.parent.on_publish()
 
 
+class PartnerDialog(ctk.CTkToplevel):
+    def __init__(self, parent: App) -> None:
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Добавить инфопартнёра")
+        self.configure(fg_color=t.CARD)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grid_columnconfigure(0, weight=1)
+
+        body = t.row(self)
+        body.grid(row=0, column=0, sticky="nsew", padx=t.GAP_XL, pady=t.GAP_XL)
+        body.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            body, text="Название", font=t.font(12), text_color=t.TEXT_MUTED
+        ).grid(row=0, column=0, sticky="w")
+        self.name = ctk.CTkEntry(body, width=420, **t.entry())
+        self.name.grid(row=1, column=0, sticky="ew", pady=(t.GAP_XS, t.GAP_M))
+        ctk.CTkLabel(
+            body, text="Ссылка", font=t.font(12), text_color=t.TEXT_MUTED
+        ).grid(row=2, column=0, sticky="w")
+        self.url = ctk.CTkEntry(body, placeholder_text="https://…", **t.entry())
+        self.url.grid(row=3, column=0, sticky="ew", pady=(t.GAP_XS, t.GAP_S))
+        self.error = ctk.CTkLabel(
+            body, text="", font=t.font(11), text_color=t.DANGER, anchor="w"
+        )
+        self.error.grid(row=4, column=0, sticky="ew")
+        buttons = t.row(body)
+        buttons.grid(row=5, column=0, sticky="e", pady=(t.GAP_M, 0))
+        ctk.CTkButton(
+            buttons, text="Отмена", width=100, command=self.destroy, **t.secondary_button()
+        ).grid(row=0, column=0)
+        ctk.CTkButton(
+            buttons, text="Добавить", width=110, command=self.save, **t.primary_button()
+        ).grid(row=0, column=1, padx=(t.GAP_S, 0))
+
+        parent.install_clipboard_fix(self)
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Return>", lambda _e: self.save())
+        self.after(30, self._finish_open)
+
+    def _finish_open(self) -> None:
+        self.update_idletasks()
+        scale = ctk.ScalingTracker.get_widget_scaling(self)
+        self.geometry(f"480x{int(self.winfo_reqheight() / scale)}")
+        self.grab_set()
+        self.name.focus_set()
+
+    def save(self) -> None:
+        name = self.name.get().strip()
+        if not name:
+            self.error.configure(text="Введите название партнёра.")
+            return
+        try:
+            url = safe_url(self.url.get())
+        except ValueError as exc:
+            self.error.configure(text=str(exc))
+            return
+        if not url:
+            self.error.configure(text="Введите ссылку партнёра.")
+            return
+        self.parent.insert_partner(name, url)
+        self.destroy()
+
+
 class App(ctk.CTk):
     def __init__(self, initial_file: Path | None = None, initial_title: str | None = None) -> None:
         super().__init__()
@@ -256,6 +337,8 @@ class App(ctk.CTk):
         configured_browser = str(self.cfg.get("browser") or "chrome")
         preferred_browser = load_browser_preference(configured_browser)
         self.browser_choice = ctk.StringVar(value=browser_label(preferred_browser))
+        self.top_banner_choice = ctk.StringVar(value=TOP_BANNER_OPTIONS["promo"][0])
+        self.bottom_banner_choice = ctk.StringVar(value=BOTTOM_BANNER_OPTIONS["site"][0])
         self.article: Article | None = None
         self.source_path: Path | None = None
         self.publish_after_login = False
@@ -385,6 +468,7 @@ class App(ctk.CTk):
         )
         column.grid(row=2, column=0, sticky="nsew", padx=(t.GAP_L, t.GAP_M), pady=t.GAP_L)
         column.grid_columnconfigure(0, weight=1)
+        self.form_column = column
 
         self._build_source_card(column)
         self._build_tail_card(column)
@@ -503,13 +587,29 @@ class App(ctk.CTk):
         ).grid(row=9, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(t.GAP_XS, 0))
 
         self._field_label(card, "Дополнительно", row=10, note="· необязательно")
-        self.extra_box = ctk.CTkTextbox(card, height=48, **t.textbox())
-        self.extra_box.grid(row=11, column=0, sticky="ew", padx=t.CARD_PAD_X)
+        self.extra_editor = RichTextEditor(
+            card,
+            height=72,
+            toolbar=("bold", "italic", "link", "heading", "quote"),
+            on_change=self.schedule_preview,
+        )
+        self.extra_editor.grid(row=11, column=0, sticky="ew", padx=t.CARD_PAD_X)
 
         self._field_label(card, "Инфопартнёры", row=12, note="· необязательно")
         self.partners_box = ctk.CTkTextbox(card, height=44, **t.textbox())
-        self.partners_box.grid(
-            row=13, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(0, t.CARD_PAD_BOTTOM)
+        self.partners_box.grid(row=13, column=0, sticky="ew", padx=t.CARD_PAD_X)
+        ctk.CTkButton(
+            card,
+            text="+ Добавить партнёра",
+            width=156,
+            command=self.add_partner,
+            **t.secondary_button(height=28),
+        ).grid(
+            row=14,
+            column=0,
+            sticky="w",
+            padx=t.CARD_PAD_X,
+            pady=(t.GAP_XS, t.CARD_PAD_BOTTOM),
         )
 
         self.tail_inputs = [
@@ -519,7 +619,6 @@ class App(ctk.CTk):
             self.time_to,
             self.record_entry,
             self.video_box,
-            self.extra_box,
             self.partners_box,
         ]
         for widget in self.tail_inputs:
@@ -532,16 +631,73 @@ class App(ctk.CTk):
         card = ctk.CTkFrame(parent, **t.card())
         card.grid(row=2, column=0, sticky="ew")
         card.grid_columnconfigure(0, weight=1)
-        self._section_title(card, "3 · ПАРАМЕТРЫ", row=0)
+        self._section_title(card, "3 · ПЛАШКИ И ПАРАМЕТРЫ", row=0)
 
-        self.promo_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
+        self._field_label(card, "Верхняя зелёная плашка", row=1, first=True)
+        self.top_banner_menu = ctk.CTkOptionMenu(
             card,
-            text="Плашка с промокодом CREATIVE HUB",
-            variable=self.promo_var,
-            command=self.refresh_preview,
-            **t.checkbox(),
-        ).grid(row=1, column=0, sticky="w", padx=t.CARD_PAD_X)
+            values=banner_labels(TOP_BANNER_OPTIONS),
+            variable=self.top_banner_choice,
+            command=lambda selected: self.on_banner_changed("top", selected),
+            **t.option_menu(),
+        )
+        self.top_banner_menu.grid(row=2, column=0, sticky="ew", padx=t.CARD_PAD_X)
+        self.top_banner_hint = ctk.CTkLabel(
+            card,
+            text="",
+            font=t.font(11),
+            text_color=t.TEXT_FAINT,
+            anchor="w",
+            justify="left",
+            wraplength=380,
+        )
+        self.top_banner_hint.grid(
+            row=3, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(t.GAP_XS, 0)
+        )
+        self.top_banner_editor = RichTextEditor(
+            card,
+            height=82,
+            toolbar=("bold", "italic", "link"),
+            on_change=self.schedule_preview,
+        )
+        self.top_banner_editor.grid(
+            row=4, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(t.GAP_XS, 0)
+        )
+        self.top_banner_editor.grid_remove()
+
+        self._field_label(card, "Нижняя зелёная плашка", row=5)
+        self.bottom_banner_menu = ctk.CTkOptionMenu(
+            card,
+            values=banner_labels(BOTTOM_BANNER_OPTIONS),
+            variable=self.bottom_banner_choice,
+            command=lambda selected: self.on_banner_changed("bottom", selected),
+            **t.option_menu(),
+        )
+        self.bottom_banner_menu.grid(row=6, column=0, sticky="ew", padx=t.CARD_PAD_X)
+        self.bottom_banner_hint = ctk.CTkLabel(
+            card,
+            text="",
+            font=t.font(11),
+            text_color=t.TEXT_FAINT,
+            anchor="w",
+            justify="left",
+            wraplength=380,
+        )
+        self.bottom_banner_hint.grid(
+            row=7, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(t.GAP_XS, 0)
+        )
+        self.bottom_banner_editor = RichTextEditor(
+            card,
+            height=82,
+            toolbar=("bold", "italic", "link"),
+            on_change=self.schedule_preview,
+        )
+        self.bottom_banner_editor.grid(
+            row=8, column=0, sticky="ew", padx=t.CARD_PAD_X, pady=(t.GAP_XS, 0)
+        )
+        self.bottom_banner_editor.grid_remove()
+        self.on_banner_changed("top", self.top_banner_choice.get())
+        self.on_banner_changed("bottom", self.bottom_banner_choice.get())
 
         self.open_browser_var = ctk.BooleanVar(
             value=bool(self.cfg.get("open_draft_after_create", True))
@@ -551,11 +707,11 @@ class App(ctk.CTk):
             text="Открыть черновик после создания",
             variable=self.open_browser_var,
             **t.checkbox(),
-        ).grid(row=2, column=0, sticky="w", padx=t.CARD_PAD_X, pady=(t.GAP_M, 0))
+        ).grid(row=9, column=0, sticky="w", padx=t.CARD_PAD_X, pady=(t.GAP_L, 0))
 
         browser_row = t.row(card)
         browser_row.grid(
-            row=3,
+            row=10,
             column=0,
             sticky="ew",
             padx=t.CARD_PAD_X,
@@ -591,7 +747,7 @@ class App(ctk.CTk):
         if len(tags) > 1:
             summary += f", +{len(tags) - 1}"
         ctk.CTkLabel(card, text=summary, font=t.font(11), text_color=t.TEXT_FAINT, anchor="w").grid(
-            row=4, column=0, sticky="ew", padx=t.CARD_PAD_X,
+            row=11, column=0, sticky="ew", padx=t.CARD_PAD_X,
             pady=(t.GAP_M, t.CARD_PAD_BOTTOM),
         )
 
@@ -642,12 +798,14 @@ class App(ctk.CTk):
         self.preview.configure(state="disabled")
         self._configure_preview_tags()
 
-        self.source_box = ctk.CTkTextbox(panel, **t.textbox(font=t.font(13)))
-        self.source_box.grid(row=1, column=0, sticky="nsew")
-        self.source_box.grid_remove()
-        inner = getattr(self.source_box, "_textbox", None)
-        if inner is not None:
-            inner.bind("<KeyRelease>", lambda _e: self.schedule_parse(), add="+")
+        self.source_editor = RichTextEditor(
+            panel,
+            height=400,
+            font=t.font(13),
+            on_change=self.schedule_parse,
+        )
+        self.source_editor.grid(row=1, column=0, sticky="nsew")
+        self.source_editor.grid_remove()
 
     def _configure_preview_tags(self) -> None:
         box = getattr(self.preview, "_textbox", None)
@@ -671,6 +829,9 @@ class App(ctk.CTk):
         )
         box.tag_config("headline", foreground=t.TEXT, font=("Segoe UI Semibold", 16), spacing3=10)
         box.tag_config("empty", foreground=t.TEXT_FAINT, font=("Segoe UI", 12), justify="center")
+        box.tag_config("preview_bold", font=("Segoe UI Semibold", 12))
+        box.tag_config("preview_italic", font=("Segoe UI", 12, "italic"))
+        self._preview_link_counter = 0
 
     # ---------- футер ----------
 
@@ -806,19 +967,67 @@ class App(ctk.CTk):
         save_browser_preference(channel)
         self.set_status(f"Браузер: {browser_label(channel)}")
 
+    def on_banner_changed(self, position: str, selected: str) -> None:
+        is_top = position == "top"
+        options = TOP_BANNER_OPTIONS if is_top else BOTTOM_BANNER_OPTIONS
+        default = "promo" if is_top else "site"
+        key = banner_key_for_label(selected, options, default)
+        editor = self.top_banner_editor if is_top else self.bottom_banner_editor
+        hint = self.top_banner_hint if is_top else self.bottom_banner_hint
+        template = options[key][1]
+        if key == "custom":
+            editor.grid()
+            hint.configure(
+                text="Можно использовать жирный, курсив и встроенные ссылки."
+            )
+        else:
+            editor.grid_remove()
+            sample_values = {
+                "date": self.date_entry.get().strip() or "дату ивента",
+                "time_from": self.time_from.get().strip() or "начало",
+                "time_to": self.time_to.get().strip() or "конец",
+                "title": self.title_entry.get().strip() or "название события",
+            }
+            rendered = template
+            for placeholder, value in sample_values.items():
+                rendered = rendered.replace("{" + placeholder + "}", value)
+            summary = plain_text(rendered)
+            if len(summary) > 170:
+                summary = summary[:169].rstrip() + "…"
+            hint.configure(text=summary or "Плашка не добавится.")
+        self.schedule_preview(delay=50)
+
     def open_login(self) -> None:
         LoginDialog(self)
 
+    def add_partner(self) -> None:
+        PartnerDialog(self)
+
+    def insert_partner(self, name: str, url: str) -> None:
+        current = self.partners_box.get("1.0", tk.END).strip()
+        separator = "\n" if current else ""
+        self.partners_box.insert(tk.END, f"{separator}{name} ({url})")
+        self.schedule_preview(delay=50)
+
     def tail_settings(self) -> TailSettings:
+        top = banner_key_for_label(
+            self.top_banner_choice.get(), TOP_BANNER_OPTIONS, "promo"
+        )
+        bottom = banner_key_for_label(
+            self.bottom_banner_choice.get(), BOTTOM_BANNER_OPTIONS, "site"
+        )
         return TailSettings(
             event_date=self.date_entry.get().strip(),
             time_from=self.time_from.get().strip(),
             time_to=self.time_to.get().strip(),
             record_url=self.record_entry.get().strip(),
             partners_raw=self.partners_box.get("1.0", tk.END),
-            extra_info=self.extra_box.get("1.0", tk.END),
+            extra_info=self.extra_editor.get_html(),
             video_embed=self.video_box.get("1.0", tk.END),
-            promo_banner=bool(self.promo_var.get()),
+            top_banner=top,
+            top_banner_custom=self.top_banner_editor.get_html(),
+            bottom_banner=bottom,
+            bottom_banner_custom=self.bottom_banner_editor.get_html(),
         )
 
     def assembled(self) -> Article | None:
@@ -842,7 +1051,7 @@ class App(ctk.CTk):
 
     def _parse_source(self) -> None:
         self._parse_job = None
-        raw = self.source_box.get("1.0", tk.END)
+        raw = self.source_editor.get_markup()
         if not raw.strip():
             self.article = None
             self.refresh_preview()
@@ -865,15 +1074,16 @@ class App(ctk.CTk):
     def switch_view(self, value: str) -> None:
         if value == "Исходник":
             self.preview.grid_remove()
-            self.source_box.grid()
+            self.source_editor.grid()
         else:
-            self.source_box.grid_remove()
+            self.source_editor.grid_remove()
             self.preview.grid()
 
     def refresh_preview(self) -> None:
         self._preview_job = None
         article = self.assembled()
         box = getattr(self.preview, "_textbox", None)
+        self._preview_link_counter = 0
         self.preview.configure(state="normal")
         self.preview.delete("1.0", tk.END)
 
@@ -922,6 +1132,8 @@ class App(ctk.CTk):
         labels = {
             "quote": "ЦИТАТА",
             "green": "ЗЕЛЁНАЯ ПЛАШКА",
+            "green_top": "ВЕРХНЯЯ ЗЕЛЁНАЯ ПЛАШКА",
+            "green_bottom": "НИЖНЯЯ ЗЕЛЁНАЯ ПЛАШКА",
             "intro": "ВСТУПЛЕНИЕ",
             "partners": "ИНФОПАРТНЁРЫ",
             "outro": "ЗАПИСЬ + ДОП. ИНФО",
@@ -934,17 +1146,39 @@ class App(ctk.CTk):
         return label
 
     def _insert_body(self, box, block: Block) -> None:
-        text = block.text
-        heading = _H3.match(text)
-        if heading:
-            box.insert(tk.END, plain_text(heading.group(1)) + "\n", "h3")
-            text = text[heading.end() :]
-        body = plain_text(text)
+        body, spans = parse_markup(block.text)
         if len(body) > PREVIEW_SNIPPET:
             body = body[: PREVIEW_SNIPPET - 1].rstrip() + "…"
-        if body:
-            tag = "quote" if block.source == "quote" else "body"
-            box.insert(tk.END, body + "\n", tag)
+        if not body:
+            return
+        # В tk.Text индекс ``end`` стоит после служебного последнего перевода
+        # строки, а вставка происходит перед ним. Для диапазонов нужен end-1c.
+        start = box.index("end-1c")
+        base_tag = "quote" if block.source == "quote" else "body"
+        box.insert(tk.END, body + "\n", base_tag)
+        body_len = len(body)
+        for kind, first, last, meta in spans:
+            if first >= body_len:
+                continue
+            last = min(last, body_len)
+            tag = {
+                "bold": "preview_bold",
+                "italic": "preview_italic",
+                "h3": "h3",
+            }.get(kind)
+            if kind == "a" and meta:
+                self._preview_link_counter += 1
+                tag = f"preview_link_{self._preview_link_counter}"
+                box.tag_config(tag, foreground=t.NAVY, underline=True)
+                box.tag_bind(
+                    tag,
+                    "<Button-1>",
+                    lambda _event, url=meta: open_in_browser(url, self.browser_channel()),
+                )
+                box.tag_bind(tag, "<Enter>", lambda _event: box.configure(cursor="hand2"))
+                box.tag_bind(tag, "<Leave>", lambda _event: box.configure(cursor="xterm"))
+            if tag:
+                box.tag_add(tag, f"{start}+{first}c", f"{start}+{last}c")
 
     # ---------- готовность и статус ----------
 
@@ -1113,8 +1347,7 @@ class App(ctk.CTk):
         self.source_path = None
         self.file_chip.grid_remove()
         self.dropzone.grid()
-        self.source_box.delete("1.0", tk.END)
-        self.source_box.insert("1.0", text)
+        self.source_editor.set_markup(text)
         self.set_status("Разбираю…")
         self.schedule_parse(delay=50)
 
@@ -1131,17 +1364,12 @@ class App(ctk.CTk):
 
         try:
             if path.suffix.lower() == ".docx":
-                from docx import Document
-
-                raw = "\n\n".join(
-                    paragraph.text for paragraph in Document(str(path)).paragraphs
-                )
+                raw = article_to_markup(article)
             else:
                 raw = path.read_text(encoding="utf-8")
         except Exception:
             raw = ""
-        self.source_box.delete("1.0", tk.END)
-        self.source_box.insert("1.0", raw)
+        self.source_editor.set_markup(raw)
 
         self.dropzone.grid_remove()
         self.file_chip.grid()
@@ -1165,18 +1393,26 @@ class App(ctk.CTk):
         items = []
         if self.article:
             items.append(f"текст статьи ({blocks_word(len(self.article.blocks))})")
-        elif self.source_box.get("1.0", tk.END).strip():
+        elif self.source_editor.get_markup().strip():
             items.append("текст статьи")
         for label, value in (
             ("заголовок", self.title_entry.get()),
             ("дата ивента", self.date_entry.get()),
             ("ссылка на запись", self.record_entry.get()),
             ("код VK Видео", self.video_box.get("1.0", tk.END)),
-            ("доп. информация", self.extra_box.get("1.0", tk.END)),
+            ("доп. информация", self.extra_editor.get_markup()),
             ("инфопартнёры", self.partners_box.get("1.0", tk.END)),
         ):
             if value.strip():
                 items.append(label)
+        if self.top_banner_choice.get() != TOP_BANNER_OPTIONS["promo"][0]:
+            items.append("выбор верхней зелёной плашки")
+        if self.bottom_banner_choice.get() != BOTTOM_BANNER_OPTIONS["site"][0]:
+            items.append("выбор нижней зелёной плашки")
+        if self.top_banner_editor.get_markup().strip():
+            items.append("свой текст верхней плашки")
+        if self.bottom_banner_editor.get_markup().strip():
+            items.append("свой текст нижней плашки")
         return items
 
     def reset_all(self) -> None:
@@ -1201,18 +1437,24 @@ class App(ctk.CTk):
 
         self.article = None
         self.source_path = None
-        self.source_box.delete("1.0", tk.END)
+        self.source_editor.clear()
         self.file_chip.grid_remove()
         self.dropzone.grid()
         for widget in (self.title_entry, self.date_entry, self.record_entry):
             widget.delete(0, tk.END)
-        for widget in (self.video_box, self.extra_box, self.partners_box):
+        for widget in (self.video_box, self.partners_box):
             widget.delete("1.0", tk.END)
+        self.extra_editor.clear()
+        self.top_banner_editor.clear()
+        self.bottom_banner_editor.clear()
         self.time_from.delete(0, tk.END)
         self.time_from.insert(0, self.templates.get("default_time_from", "18:30"))
         self.time_to.delete(0, tk.END)
         self.time_to.insert(0, self.templates.get("default_time_to", "21:00"))
-        self.promo_var.set(True)
+        self.top_banner_choice.set(TOP_BANNER_OPTIONS["promo"][0])
+        self.bottom_banner_choice.set(BOTTOM_BANNER_OPTIONS["site"][0])
+        self.on_banner_changed("top", self.top_banner_choice.get())
+        self.on_banner_changed("bottom", self.bottom_banner_choice.get())
         self.view_switch.set("Блоки")
         self.switch_view("Блоки")
         self.set_status("Всё сброшено. Перетащите .docx или нажмите Ctrl+V")

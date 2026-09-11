@@ -50,6 +50,61 @@ DEFAULT_TAIL_TEMPLATES: dict[str, str] = {
     "default_time_to": "21:00",
 }
 
+# Зелёные плашки из опубликованных референсов хаба. Ключи хранятся
+# отдельно от подписей, чтобы смена текста в интерфейсе не ломала настройки.
+TOP_BANNER_OPTIONS: dict[str, tuple[str, str]] = {
+    "none": ("Без верхней плашки", ""),
+    "promo": (
+        "Промокод CREATIVE HUB",
+        "«CREATIVE HUB» — промокод на скидку 5% на все курсы ДПО",
+    ),
+    "telegram_bot": (
+        "Telegram-бот с материалами",
+        "Чтобы не пропускать интересные мероприятия и получать фотографии, "
+        "презентации и другие материалы по итогам ивента, подписывайтесь на "
+        '<a href="https://t.me/crehub_hse_bot" target="_blank" '
+        'rel="noopener noreferrer">Телеграм-бот Креативного хаба</a>.',
+    ),
+    "webinars": (
+        "Открытые вебинары",
+        "Если интересуетесь курсами по дизайну, приглашаем на открытые вебинары "
+        "каждый день в 19:00 по Москве. Для тех, кто присутствовал на мероприятии "
+        "{date} — скидка 5% на обучение. "
+        '<a href="https://design.hse.ru/dop/online-marathon" target="_blank" '
+        'rel="noopener noreferrer">Выбирайте и подключайтесь</a>.',
+    ),
+    "custom": ("Свой текст…", ""),
+}
+
+BOTTOM_BANNER_OPTIONS: dict[str, tuple[str, str]] = {
+    "site": (
+        "Сайт Креативного хаба",
+        "Мероприятие прошло {date} с {time_from} до {time_to} в пространстве "
+        "Креативный хаб / HSE CREATIVE HUB. Подробнее об этом и других событиях, "
+        "проходящих на площадке, можно узнать на сайте https://creative.hse.ru/hub.",
+    ),
+    "telegram_channel": (
+        "Telegram-канал хаба",
+        "Мероприятие прошло {date} с {time_from} до {time_to} в пространстве "
+        "Креативный хаб / HSE CREATIVE HUB. Подробнее об этом и других событиях, "
+        "проходящих на площадке, можно узнать в нашем "
+        '<a href="https://t.me/creativehub_hse" target="_blank" '
+        'rel="noopener noreferrer">Telegram-канале</a>.',
+    ),
+    "custom": ("Свой текст…", ""),
+    "none": ("Без нижней плашки", ""),
+}
+
+
+def banner_labels(options: dict[str, tuple[str, str]]) -> list[str]:
+    return [label for label, _template in options.values()]
+
+
+def banner_key_for_label(
+    label: str, options: dict[str, tuple[str, str]], default: str
+) -> str:
+    return next((key for key, item in options.items() if item[0] == label), default)
+
 
 def ensure_config(path: Path | None = None) -> Path:
     path = path or DEFAULT_CONFIG
