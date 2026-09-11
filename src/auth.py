@@ -25,6 +25,7 @@ AUTH_URL = (
 OIDC_STORAGE_KEY = "oidc.user:https://auth.mediiia.ru:MediiiaCom"
 APP_DATA_DIR = Path.home() / ".mediiia-publisher"
 DEFAULT_TOKEN_PATH = APP_DATA_DIR / "session.json"
+LAST_ACCOUNT_PATH = APP_DATA_DIR / "account.json"
 BROWSER_PROFILE_DIR = APP_DATA_DIR / "browser"
 LANDING_URL = "https://mediiia.com/"
 FRESHNESS_SKEW_SEC = 120.0
@@ -54,6 +55,7 @@ def save_session(data: dict[str, Any], path: Path | None = None) -> Path:
     path = path or token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    remember_account(data)
     return path
 
 
@@ -61,6 +63,54 @@ def clear_session(path: Path | None = None) -> None:
     path = path or token_path()
     if path.exists():
         path.unlink()
+
+
+def remember_account(session: dict[str, Any]) -> None:
+    """Помним, кто входил: токен живёт час, а вход должен ощущаться постоянным."""
+    email = (session.get("email") or "").strip()
+    if not email:
+        return
+    hint = {"email": email, "name": session.get("name") or ""}
+    try:
+        LAST_ACCOUNT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_ACCOUNT_PATH.write_text(
+            json.dumps(hint, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def last_account() -> dict[str, Any] | None:
+    for path in (LAST_ACCOUNT_PATH, token_path()):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        email = (data.get("email") or "").strip()
+        if email:
+            # Из просроченной сессии берём только почту, токен оттуда не нужен.
+            return {"email": email, "name": data.get("name") or ""}
+    return None
+
+
+def forget_account() -> None:
+    clear_session()
+    if LAST_ACCOUNT_PATH.exists():
+        LAST_ACCOUNT_PATH.unlink()
+
+
+def can_resume(browser: str = "chrome") -> dict[str, Any] | None:
+    """
+    Вход считается действующим и когда токен истёк: профиль браузера
+    помнит аккаунт, и токен продлевается молча, без окна входа.
+    """
+    session = load_session()
+    if session:
+        return session
+    account = last_account()
+    if account and profile_dir_for(account.get("email"), browser).exists():
+        return account
+    return None
 
 
 def _extract_oidc(raw: str | None) -> dict[str, Any] | None:
@@ -276,6 +326,9 @@ def ensure_session(
     password: str | None = None,
     browser: str = "chrome",
 ) -> dict[str, Any]:
+    if not email:
+        # Без почты профиль браузера не найти, а в нём и лежит продлеваемый вход.
+        email = (last_account() or {}).get("email") or None
     if not force_login:
         existing = load_session()
         if existing and (not email or (existing.get("email") or "").lower() == email.lower()):

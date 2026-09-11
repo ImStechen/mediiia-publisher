@@ -44,6 +44,44 @@ def test_extract_oidc_prefers_storage_expiry() -> None:
     assert session["expires_at"] == exp + 999
 
 
+def test_can_resume_survives_expired_token(tmp_path, monkeypatch) -> None:
+    """Токен Mediiia живёт час, но вход должен ощущаться постоянным."""
+    monkeypatch.setattr(auth, "LAST_ACCOUNT_PATH", tmp_path / "account.json")
+    monkeypatch.setattr(auth, "DEFAULT_TOKEN_PATH", tmp_path / "session.json")
+    monkeypatch.setattr(auth, "BROWSER_PROFILE_DIR", tmp_path / "browser")
+
+    expired = {
+        "access_token": _token(int(time.time()) - 10),
+        "expires_at": time.time() - 10,
+        "email": "editor@example.com",
+    }
+    auth.save_session(expired)
+
+    assert auth.load_session() is None  # просроченный токен не используем
+    assert auth.can_resume("chrome") is None  # профиля браузера ещё нет
+
+    auth.profile_dir_for("editor@example.com", "chrome").mkdir(parents=True)
+    resumed = auth.can_resume("chrome")
+    assert resumed is not None
+    assert resumed["email"] == "editor@example.com"
+
+    auth.forget_account()
+    assert auth.can_resume("chrome") is None
+
+
+def test_last_account_falls_back_to_session_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(auth, "LAST_ACCOUNT_PATH", tmp_path / "account.json")
+    monkeypatch.setattr(auth, "DEFAULT_TOKEN_PATH", tmp_path / "session.json")
+    (tmp_path / "session.json").write_text(
+        json.dumps({"email": "editor@example.com", "access_token": "x"}), encoding="utf-8"
+    )
+
+    account = auth.last_account()
+
+    assert account == {"email": "editor@example.com", "name": ""}
+    assert "access_token" not in account
+
+
 class _FakeLocator:
     def __init__(self, hrefs: list[str]) -> None:
         self._hrefs = hrefs

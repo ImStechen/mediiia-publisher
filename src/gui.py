@@ -14,7 +14,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from . import theme as t
-from .auth import clear_session, ensure_session, load_session
+from .auth import can_resume, clear_session, ensure_session, forget_account
 from .browsers import (
     BROWSERS,
     browser_label,
@@ -43,6 +43,7 @@ _CTRL_KEYCODES = {65: "select_all", 67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>
 
 PREVIEW_SNIPPET = 220
 SERVICE_SOURCES = {"green", "intro", "partners", "outro", "video"}
+EXTRA_MISSING = {"Ссылка": "ссылки на запись", "Видео": "видео"}
 
 
 def guess_event_date(name: str) -> str:
@@ -85,8 +86,8 @@ class LoginDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
 
         saved = load_credentials()
-        session = load_session()
         browser = parent.browser_channel()
+        session = can_resume(browser)
 
         body = t.row(self)
         body.grid(row=0, column=0, sticky="nsew", padx=t.GAP_XL, pady=t.GAP_XL)
@@ -184,7 +185,7 @@ class LoginDialog(ctk.CTkToplevel):
             pass
 
     def on_logout(self) -> None:
-        clear_session()
+        forget_account()
         self.parent.refresh_account_chip()
         self.parent.set_status("Вы вышли из аккаунта")
         self.destroy()
@@ -484,13 +485,13 @@ class App(ctk.CTk):
         self.time_to.grid(row=0, column=3, padx=(t.GAP_XS, 0))
         self.time_to.insert(0, self.templates.get("default_time_to", "21:00"))
 
-        self._field_label(card, "Ссылка на запись", row=5, required=True)
+        self._field_label(card, "Ссылка на запись", row=5, note="· необязательно")
         self.record_entry = ctk.CTkEntry(
             card, placeholder_text="https://vkvideo.ru/video-…", **t.entry()
         )
         self.record_entry.grid(row=6, column=0, sticky="ew", padx=t.CARD_PAD_X)
 
-        self._field_label(card, "Код вставки VK Видео", row=7, required=True)
+        self._field_label(card, "Код вставки VK Видео", row=7, note="· необязательно")
         self.video_box = ctk.CTkTextbox(card, height=56, **t.textbox())
         self.video_box.grid(row=8, column=0, sticky="ew", padx=t.CARD_PAD_X)
         ctk.CTkLabel(
@@ -783,7 +784,7 @@ class App(ctk.CTk):
     # ---------- состояние ----------
 
     def refresh_account_chip(self) -> None:
-        session = load_session()
+        session = can_resume(self.browser_channel())
         if session:
             who = session.get("email") or session.get("name") or "аккаунт"
             self.account_btn.configure(text=f"{who}  ▾", text_color="#FFFFFF")
@@ -949,19 +950,24 @@ class App(ctk.CTk):
 
     def readiness(self) -> list[tuple[str, bool]]:
         blocks = len(self.article.blocks) if self.article else 0
-        video = self.video_box.get("1.0", tk.END)
         return [
             (blocks_word(blocks) if blocks else "Нет текста", blocks > 0),
             ("Заголовок", bool(self.title_entry.get().strip())),
             ("Дата", bool(self.date_entry.get().strip())),
+        ]
+
+    def extras(self) -> list[tuple[str, bool]]:
+        """Запись и видео есть не у каждого ивента — отправку они не держат."""
+        video = self.video_box.get("1.0", tk.END)
+        return [
             ("Ссылка", bool(self.record_entry.get().strip())),
-            ("Код видео", "<iframe" in video.lower()),
+            ("Видео", "<iframe" in video.lower()),
         ]
 
     def refresh_readiness(self) -> None:
         checks = self.readiness()
         ready = all(ok for _, ok in checks)
-        has_session = bool(load_session())
+        has_session = bool(can_resume(self.browser_channel()))
 
         if self._busy:
             return
@@ -995,16 +1001,20 @@ class App(ctk.CTk):
             row=0, column=0, padx=(0, t.GAP_M)
         )
 
+        extras = self.extras()
         if ready:
             assembled = self.assembled()
             total = len(assembled.blocks) if assembled else 0
+            missing = [EXTRA_MISSING[label] for label, ok in extras if not ok]
+            without = f" · без {' и '.join(missing)}" if missing else ""
             ctk.CTkLabel(
                 self.status_area,
-                text=f"✓ Готово к отправке · {blocks_word(total)}",
+                text=f"✓ Готово к отправке · {blocks_word(total)}{without}",
                 font=t.font(12),
                 text_color=t.GREEN_TEXT,
             ).grid(row=0, column=1, sticky="w")
         else:
+            column = 0
             for column, (label, ok) in enumerate(checks, start=1):
                 mark = "✓" if ok else "×"
                 ctk.CTkLabel(
@@ -1012,6 +1022,14 @@ class App(ctk.CTk):
                     text=f"{mark} {label}",
                     font=t.font(12),
                     text_color=t.GREEN_TEXT if ok else t.DANGER,
+                ).grid(row=0, column=column, sticky="w", padx=(0, t.GAP_M))
+            # Необязательное показываем тускло: его отсутствие ничего не ломает.
+            for column, (label, ok) in enumerate(extras, start=column + 1):
+                ctk.CTkLabel(
+                    self.status_area,
+                    text=f"{'✓' if ok else '·'} {label}",
+                    font=t.font(12),
+                    text_color=t.GREEN_TEXT if ok else t.TEXT_FAINT,
                 ).grid(row=0, column=column, sticky="w", padx=(0, t.GAP_M))
 
         ctk.CTkLabel(
@@ -1210,7 +1228,7 @@ class App(ctk.CTk):
         if article is None or not article.blocks:
             return
 
-        if not load_session():
+        if not can_resume(self.browser_channel()):
             self.publish_after_login = True
             self.open_login()
             return
@@ -1220,6 +1238,8 @@ class App(ctk.CTk):
         # Переменные Tk читаем только в главном потоке.
         open_browser = bool(self.open_browser_var.get())
         browser = self.browser_channel()
+        # Если вход придётся подтверждать заново, форму заполнит сама программа.
+        saved = load_credentials()
         self._busy = True
         self.publish_btn.configure(
             state="disabled", text="Создаю черновик…", fg_color=t.DISABLED_BG
@@ -1235,7 +1255,12 @@ class App(ctk.CTk):
 
         def work() -> None:
             try:
-                session = ensure_session(browser=browser)
+                self.post(lambda: self._set_busy_message("Проверяю вход в Mediiia"))
+                session = ensure_session(
+                    email=saved.email or None,
+                    password=saved.password or None,
+                    browser=browser,
+                )
                 account_id = (session.get("account_id") or "").strip()
                 configured_email = (cfg.get("account_email") or "").strip().lower()
                 session_email = (session.get("email") or "").strip().lower()

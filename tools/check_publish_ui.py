@@ -43,7 +43,7 @@ class FakeClient:
 
 
 gui.MediiiaClient = FakeClient
-gui.load_session = lambda *a, **k: SESSION
+gui.can_resume = lambda *a, **k: SESSION
 gui.ensure_session = lambda *a, **k: SESSION
 
 app = gui.App(initial_file=Path("9 сентября.docx"), initial_title="Проверка")
