@@ -19,6 +19,8 @@ _LINK_MD = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 _BOLD_MD = re.compile(r"\*\*([^*\n]+)\*\*")
 _ITALIC_MD = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
 _ALLOWED_LINK = re.compile(r"^https?://", re.I)
+_HISTORY_LIMIT = 100
+_HISTORY_DELAY_MS = 600
 
 
 def _markdown_blocks_to_html(markup: str) -> str:
@@ -176,7 +178,12 @@ class RichTextEditor(ctk.CTkFrame):
         )
         self.textbox.grid(row=1, column=0, sticky="nsew")
         self.text: tk.Text = self.textbox._textbox
-        self.text.configure(undo=True, maxundo=-1, autoseparators=True)
+        # Своя история: tk.Text запоминает только текст, но не теги форматирования.
+        self.text.configure(undo=False)
+        self._restoring = False
+        self._history_job: str | None = None
+        self._history: list[tuple[str, str]] = [("", "1.0")]
+        self._history_index = 0
         self.text.tag_configure("bold", font=("Segoe UI Semibold", font_size))
         self.text.tag_configure("italic", font=("Segoe UI", font_size, "italic"))
         self.text.tag_configure(
@@ -192,20 +199,77 @@ class RichTextEditor(ctk.CTkFrame):
             lmargin2=14,
         )
         self.text.bind("<KeyRelease>", self._changed, add="+")
-        self.text.bind("<<Paste>>", lambda _e: self.after_idle(self._notify), add="+")
+        self.text.bind("<<Paste>>", lambda _e: self.after_idle(self._changed), add="+")
+        self.text.bind("<<Cut>>", lambda _e: self.after_idle(self._changed), add="+")
         self.text.bind("<Control-KeyPress>", self._ctrl_key, add="+")
         t.attach_focus_ring(self.textbox)
 
     def _ctrl_key(self, event: tk.Event) -> str | None:
         # Keycodes не зависят от русской раскладки.
+        keycode = int(event.keycode)
+        if keycode == 90:
+            self.redo() if event.state & 0x1 else self.undo()
+            return "break"
+        if keycode == 89:
+            self.redo()
+            return "break"
         actions = {66: self.toggle_bold, 73: self.toggle_italic, 75: self.edit_link}
-        action = actions.get(int(event.keycode))
+        action = actions.get(keycode)
         if action:
             action()
             return "break"
         return None
 
     def _changed(self, _event=None) -> None:
+        self._schedule_history()
+        self._notify()
+
+    def _snapshot(self) -> tuple[str, str]:
+        return self.get_markup(), self.text.index("insert")
+
+    def _cancel_pending_history(self) -> None:
+        if self._history_job is not None:
+            self.after_cancel(self._history_job)
+            self._history_job = None
+
+    def _schedule_history(self) -> None:
+        # Серия нажатий подряд отменяется одним шагом.
+        if self._restoring:
+            return
+        self._cancel_pending_history()
+        self._history_job = self.after(_HISTORY_DELAY_MS, self._push_history)
+
+    def _push_history(self) -> None:
+        if self._restoring:
+            return
+        self._cancel_pending_history()
+        state = self._snapshot()
+        if state[0] == self._history[self._history_index][0]:
+            self._history[self._history_index] = state
+            return
+        del self._history[self._history_index + 1 :]
+        self._history.append(state)
+        if len(self._history) > _HISTORY_LIMIT:
+            del self._history[0]
+        self._history_index = len(self._history) - 1
+
+    def _reset_history(self) -> None:
+        self._cancel_pending_history()
+        self._history = [self._snapshot()]
+        self._history_index = 0
+
+    def _restore(self, state: tuple[str, str]) -> None:
+        markup, insert = state
+        self._restoring = True
+        try:
+            self.set_markup(markup, keep_history=True)
+            try:
+                self.text.mark_set("insert", insert)
+                self.text.see("insert")
+            except tk.TclError:
+                pass
+        finally:
+            self._restoring = False
         self._notify()
 
     def _notify(self) -> None:
@@ -226,6 +290,7 @@ class RichTextEditor(ctk.CTkFrame):
         selected = self._selection()
         if not selected:
             return
+        self._push_history()
         start, end = selected
         if lines:
             start = self.text.index(f"{start} linestart")
@@ -244,7 +309,7 @@ class RichTextEditor(ctk.CTkFrame):
             elif tag == "quote":
                 self.text.tag_remove("heading", start, end)
             self.text.tag_add(tag, start, end)
-        self.text.edit_separator()
+        self._push_history()
         self._notify()
 
     def toggle_bold(self) -> None:
@@ -273,6 +338,7 @@ class RichTextEditor(ctk.CTkFrame):
         if not selected:
             return
         start, end = selected
+        self._push_history()
         existing = self._link_at_selection(start, end)
         initial = existing[1] if existing else ""
         value = simpledialog.askstring(
@@ -298,7 +364,7 @@ class RichTextEditor(ctk.CTkFrame):
                 start, end = str(ranges[0]), str(ranges[1])
         if url:
             self._add_link(start, end, url)
-        self.text.edit_separator()
+        self._push_history()
         self._notify()
 
     def _add_link(self, start: str, end: str, url: str) -> str:
@@ -318,22 +384,24 @@ class RichTextEditor(ctk.CTkFrame):
         return tag
 
     def undo(self) -> None:
-        try:
-            self.text.edit_undo()
-        except tk.TclError:
+        self._push_history()
+        if self._history_index == 0:
             return
-        self._notify()
+        self._history_index -= 1
+        self._restore(self._history[self._history_index])
 
     def redo(self) -> None:
-        try:
-            self.text.edit_redo()
-        except tk.TclError:
+        self._cancel_pending_history()
+        if self._history_index >= len(self._history) - 1:
             return
-        self._notify()
+        self._history_index += 1
+        self._restore(self._history[self._history_index])
 
-    def set_markup(self, markup: str) -> None:
+    def set_markup(self, markup: str, *, keep_history: bool = False) -> None:
         text, spans = parse_markup(markup)
         self.text.delete("1.0", tk.END)
+        for stale in tuple(self.links):
+            self.text.tag_delete(stale)
         self.links.clear()
         self.text.insert("1.0", text)
         for kind, start, end, meta in spans:
@@ -348,7 +416,8 @@ class RichTextEditor(ctk.CTkFrame):
                 self.text.tag_add(
                     {"h3": "heading", "blockquote": "quote"}.get(kind, kind), first, last
                 )
-        self.text.edit_reset()
+        if not keep_history:
+            self._reset_history()
 
     def get_markup(self) -> str:
         end = self.text.index("end-1c")

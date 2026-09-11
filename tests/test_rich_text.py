@@ -55,6 +55,49 @@ def test_article_markup_round_trip_keeps_structure() -> None:
     assert restored.blocks[1].quote_author == "Анна Иванова"
 
 
+@pytest.fixture()
+def editor():
+    ctk = pytest.importorskip("customtkinter")
+    from src.rich_text import RichTextEditor
+
+    try:
+        root = ctk.CTk()
+    except Exception as exc:  # pragma: no cover - нет графической сессии
+        pytest.skip(f"Tk недоступен: {exc}")
+    root.withdraw()
+    widget = RichTextEditor(root)
+    try:
+        yield widget
+    finally:
+        root.destroy()
+
+
+def test_undo_returns_formatting_not_only_text(editor) -> None:
+    editor.set_markup("Текст про хаб")
+    editor.text.tag_add("sel", "1.0", "1.5")
+    editor.toggle_bold()
+    assert "<strong>Текст</strong>" in editor.get_markup()
+
+    editor.undo()
+    assert editor.get_markup() == "Текст про хаб"
+
+    editor.redo()
+    assert "<strong>Текст</strong>" in editor.get_markup()
+
+
+def test_undo_restores_removed_link(editor) -> None:
+    editor.set_markup('<a href="https://t.me/creativehub_hse">канал</a>')
+    tag = editor._add_link("1.0", "1.5", "https://creative.hse.ru/hub")
+    editor._push_history()
+    assert f'href="https://creative.hse.ru/hub"' in editor.get_markup()
+
+    editor.undo()
+    markup = editor.get_markup()
+    assert 'href="https://t.me/creativehub_hse"' in markup
+    assert "creative.hse.ru" not in markup
+    assert tag not in editor.text.tag_names()
+
+
 def test_markup_to_html_and_url_validation() -> None:
     assert markup_to_html("# Заголовок\n\nТекст") == "<h3>Заголовок</h3><br><br>Текст"
     assert safe_url("t.me/creativehub_hse") == "https://t.me/creativehub_hse"
