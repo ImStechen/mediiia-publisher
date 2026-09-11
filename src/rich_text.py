@@ -283,23 +283,33 @@ class RichTextEditor(ctk.CTkFrame):
         )
         if value is None:
             return
-        if existing:
-            ranges = self.text.tag_ranges(existing[0])
-            self.text.tag_delete(existing[0])
-            self.links.pop(existing[0], None)
-            if ranges:
-                start, end = str(ranges[0]), str(ranges[1])
+        url = ""
         if value.strip():
             try:
                 url = safe_url(value)
             except ValueError as exc:
                 messagebox.showerror("Неверная ссылка", str(exc), parent=self)
                 return
+        if existing:
+            ranges = self.text.tag_ranges(existing[0])
+            self.text.tag_delete(existing[0])
+            self.links.pop(existing[0], None)
+            if ranges:
+                start, end = str(ranges[0]), str(ranges[1])
+        if url:
             self._add_link(start, end, url)
         self.text.edit_separator()
         self._notify()
 
     def _add_link(self, start: str, end: str, url: str) -> str:
+        # Один символ не может вести сразу по двум адресам.
+        for old_tag in tuple(self.links):
+            ranges = self.text.tag_ranges(old_tag)
+            for index in range(0, len(ranges), 2):
+                if self.text.compare(ranges[index], "<", end) and self.text.compare(
+                    ranges[index + 1], ">", start
+                ):
+                    self.text.tag_remove(old_tag, start, end)
         self._link_counter += 1
         tag = f"link_{self._link_counter}"
         self.links[tag] = url

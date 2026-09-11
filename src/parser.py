@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,11 +113,24 @@ def markdown_inline_to_html(text: str) -> str:
         text,
         flags=re.I,
     )
+    # Markdown обрабатываем только вне HTML-тегов. Иначе звёздочки в
+    # href/query превращались в <em> прямо внутри адреса.
+    protected: dict[str, str] = {}
+
+    def keep_tag(match: re.Match[str]) -> str:
+        marker = f"\x00TAG{len(protected)}\x00"
+        protected[marker] = match.group(0)
+        return marker
+
+    text = re.sub(r"<[^>]+>", keep_tag, text)
     text = _LINK_MD.sub(
         r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>', text
     )
     text = _BOLD_MD.sub(r"<strong>\1</strong>", text)
-    return _ITALIC_MD.sub(r"<em>\1</em>", text)
+    text = _ITALIC_MD.sub(r"<em>\1</em>", text)
+    for marker, tag in protected.items():
+        text = text.replace(marker, tag)
+    return text
 
 
 def is_typographic_quote(text: str) -> bool:
@@ -210,12 +224,28 @@ def _chunk_to_block(chunk: str) -> Block | None:
     if is_typographic_quote(joined):
         return _quote_block(joined)
 
-    # 3. Подзаголовок: markdown-решётка или одиночный полностью жирный абзац
+    # 3. Подзаголовки могут стоять рядом с текстом без пустой строки.
+    # Сохраняем их как h3 внутри того же блока, а не выводим буквальную "#".
+    if any(_HEADING.match(line.strip()) for line in lines):
+        html_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if _HEADING.match(stripped):
+                title = markdown_inline_to_html(_HEADING.sub("", stripped).strip())
+                html_lines.append(f"<h3>{title}</h3>")
+            else:
+                html_lines.append(markdown_inline_to_html(stripped))
+        if len(html_lines) == 1:
+            return Block(style="normal", text=html_lines[0][4:-5], source="heading")
+        return Block(
+            style="normal",
+            text="<br><br>".join(html_lines),
+            source="paragraph",
+        )
+
+    # 4. Одиночный полностью жирный абзац тоже считается подзаголовком.
     if len(lines) == 1:
         single = lines[0].strip()
-        if _HEADING.match(single):
-            body = markdown_inline_to_html(_HEADING.sub("", single).strip())
-            return Block(style="normal", text=body, source="heading") if body else None
         stripped = single.strip()
         is_all_bold = (
             stripped.startswith("**")
@@ -230,7 +260,7 @@ def _chunk_to_block(chunk: str) -> Block | None:
             body = markdown_inline_to_html(stripped)
             return Block(style="normal", text=body, source="heading") if body else None
 
-    # 4. Обычный абзац
+    # 5. Обычный абзац
     cleaned = [_QUOTE_PREFIX.sub("", ln.strip()) for ln in lines]
     body = _to_html_body(cleaned)
     return Block(style="normal", text=body, source="paragraph") if body else None
@@ -391,30 +421,49 @@ def parse_plain_text(raw: str, title_hint: str | None = None) -> Article:
 
 
 def _docx_paragraph_to_markdown(paragraph) -> str:
-    """Абзац Word → строка с **жирным**, склеивая соседние runs одного стиля."""
-    merged: list[tuple[bool, str]] = []
-    for run in paragraph.runs:
-        text = run.text or ""
-        if not text:
-            continue
-        bold = bool(run.bold)
-        if merged and merged[-1][0] == bold:
-            merged[-1] = (bold, merged[-1][1] + text)
-        else:
-            merged.append((bold, text))
+    """Абзац Word → HTML с жирным, курсивом и встроенными ссылками."""
+
+    def formatted(text: str, *, bold: bool = False, italic: bool = False) -> str:
+        if not text.strip():
+            return text
+        lead = text[: len(text) - len(text.lstrip())]
+        tail = text[len(text.rstrip()) :]
+        core = html.escape(text.strip())
+        if italic:
+            core = f"<em>{core}</em>"
+        if bold:
+            core = f"<strong>{core}</strong>"
+        return lead + core + tail
 
     parts: list[str] = []
-    for bold, text in merged:
-        if not text.strip():
-            parts.append(text)
+    content = (
+        paragraph.iter_inner_content()
+        if hasattr(paragraph, "iter_inner_content")
+        else paragraph.runs
+    )
+    for item in content:
+        if item.__class__.__name__ == "Hyperlink":
+            link_parts = [
+                formatted(run.text or "", bold=bool(run.bold), italic=bool(run.italic))
+                for run in item.runs
+            ]
+            link_text = "".join(link_parts)
+            url = getattr(item, "url", "") or ""
+            if url and link_text:
+                parts.append(
+                    f'<a href="{html.escape(url, quote=True)}" target="_blank" '
+                    f'rel="noopener noreferrer">{link_text}</a>'
+                )
+            else:
+                parts.append(link_text)
             continue
-        if bold:
-            lead = text[: len(text) - len(text.lstrip())]
-            tail = text[len(text.rstrip()) :]
-            parts.append(f"{lead}**{text.strip()}**{tail}")
-        else:
-            parts.append(text)
-
+        parts.append(
+            formatted(
+                item.text or "",
+                bold=bool(item.bold),
+                italic=bool(item.italic),
+            )
+        )
     result = "".join(parts).strip()
     return result or (paragraph.text or "").strip()
 
@@ -523,19 +572,21 @@ def build_intro_blocks(
     selected = tail.top_banner
     if tail.promo_banner is False:
         selected = "none"
-    elif tail.promo_banner is True and selected == "promo":
-        # Старый config.json может переопределять текст промокода.
+    if selected == "promo":
+        # config.json по-прежнему может переопределять текст промокода.
         TOP_BANNER_OPTIONS = dict(TOP_BANNER_OPTIONS)
         TOP_BANNER_OPTIONS["promo"] = (
             TOP_BANNER_OPTIONS["promo"][0],
             templates.get("promo_banner") or TOP_BANNER_OPTIONS["promo"][1],
         )
-    banner = _banner_text(
-        selected,
-        tail.top_banner_custom,
-        TOP_BANNER_OPTIONS,
-        {"date": tail.event_date.strip(), "title": article.title.strip()},
-    )
+    banner = ""
+    if selected != "webinars" or tail.event_date.strip():
+        banner = _banner_text(
+            selected,
+            tail.top_banner_custom,
+            TOP_BANNER_OPTIONS,
+            {"date": tail.event_date.strip(), "title": article.title.strip()},
+        )
     if banner:
         blocks.append(
             Block(style="colored", text=banner, source="green_top", color=GREEN)
@@ -606,16 +657,18 @@ def build_tail_blocks(tail: TailSettings, templates: dict[str, str]) -> list[Blo
         bottom_options["site"][0],
         templates.get("event_template") or bottom_options["site"][1],
     )
-    banner = _banner_text(
-        tail.bottom_banner,
-        tail.bottom_banner_custom,
-        bottom_options,
-        {
-            "date": tail.event_date.strip(),
-            "time_from": tail.time_from.strip(),
-            "time_to": tail.time_to.strip(),
-        },
-    )
+    banner = ""
+    if tail.bottom_banner not in {"site", "telegram_channel"} or tail.event_date.strip():
+        banner = _banner_text(
+            tail.bottom_banner,
+            tail.bottom_banner_custom,
+            bottom_options,
+            {
+                "date": tail.event_date.strip(),
+                "time_from": tail.time_from.strip(),
+                "time_to": tail.time_to.strip(),
+            },
+        )
     if banner:
         blocks.append(
             Block(

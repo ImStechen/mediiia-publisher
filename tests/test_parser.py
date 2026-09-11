@@ -1,5 +1,14 @@
 from src.config import DEFAULT_TAIL_TEMPLATES
-from src.parser import GREEN, TailSettings, assemble, parse_partners, parse_plain_text, vk_video_iframe
+from src.parser import (
+    GREEN,
+    TailSettings,
+    _docx_paragraph_to_markdown,
+    assemble,
+    markdown_inline_to_html,
+    parse_partners,
+    parse_plain_text,
+    vk_video_iframe,
+)
 
 
 def test_gemini_like_article():
@@ -142,3 +151,62 @@ def test_banners_can_be_disabled():
         DEFAULT_TAIL_TEMPLATES,
     )
     assert not any(block.source.startswith("green") for block in full.blocks)
+
+
+def test_config_can_override_promo_and_date_dependent_banners_wait_for_date():
+    article = parse_plain_text("Заголовок\n\nАбзац.")
+    configured = assemble(
+        article,
+        TailSettings(top_banner="promo", bottom_banner="none"),
+        {"promo_banner": "Промо из config.json"},
+    )
+    assert configured.blocks[0].text == "Промо из config.json"
+
+    without_date = assemble(
+        article,
+        TailSettings(top_banner="webinars", bottom_banner="telegram_channel"),
+        DEFAULT_TAIL_TEMPLATES,
+    )
+    assert not any(block.source.startswith("green") for block in without_date.blocks)
+
+
+def test_heading_next_to_body_and_stars_in_link_are_preserved():
+    article = parse_plain_text("Заголовок\n\n# Раздел\nТекст раздела.")
+    assert len(article.blocks) == 1
+    assert article.blocks[0].text == "<h3>Раздел</h3><br><br>Текст раздела."
+
+    html = '<a href="https://example.com/*keep*/x">*курсив*</a>'
+    converted = markdown_inline_to_html(html)
+    assert 'href="https://example.com/*keep*/x"' in converted
+    assert "<em>курсив</em>" in converted
+
+
+def test_docx_conversion_keeps_bold_italic_and_hyperlink():
+    class Run:
+        def __init__(self, text, *, bold=False, italic=False):
+            self.text = text
+            self.bold = bold
+            self.italic = italic
+
+    class Hyperlink:
+        url = "https://example.com"
+        runs = [Run("ссыл", bold=True), Run("ка", italic=True)]
+
+    class Paragraph:
+        text = "Жирный, курсив и ссылка"
+
+        @staticmethod
+        def iter_inner_content():
+            return [
+                Run("Жирный", bold=True),
+                Run(", "),
+                Run("курсив", italic=True),
+                Run(" и "),
+                Hyperlink(),
+            ]
+
+    markup = _docx_paragraph_to_markdown(Paragraph())
+    assert "<strong>Жирный</strong>" in markup
+    assert "<em>курсив</em>" in markup
+    assert '<a href="https://example.com"' in markup
+    assert "<strong>ссыл</strong><em>ка</em>" in markup

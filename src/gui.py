@@ -1084,6 +1084,10 @@ class App(ctk.CTk):
         article = self.assembled()
         box = getattr(self.preview, "_textbox", None)
         self._preview_link_counter = 0
+        if box is not None:
+            for tag in box.tag_names():
+                if tag.startswith("preview_link_"):
+                    box.tag_delete(tag)
         self.preview.configure(state="normal")
         self.preview.delete("1.0", tk.END)
 
